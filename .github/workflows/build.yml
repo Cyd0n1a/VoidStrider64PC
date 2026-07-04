@@ -1,38 +1,21 @@
-name: Rust
+name: Build game bundles
+
 permissions:
-  contents: read
+  contents: write
 
 on:
   push:
-    branches: ["main"]
     tags:
       - "v*"
-  pull_request:
-    branches: ["main"]
-  merge_group:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
-  RA_HARDCORE: ${{ github.ref_type == 'tag' && 'true' || 'false' }}
-  NETPLAY_ID: ${{ github.ref_type == 'tag' && secrets.NETPLAY_ID || 'dev' }}
-  BUILD_PROFILE: ${{ github.ref_type == 'tag' && 'release' || 'dev' }}
-  BUILD_DIR: ${{ github.ref_type == 'tag' && 'release' || 'debug' }}
+  GAME_NAME: VoidStrider64
 
 jobs:
   build-linux:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            arch: linux-x86_64
-            llvm: X64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            arch: linux-aarch64
-            llvm: ARM64
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -40,7 +23,7 @@ jobs:
           fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: ${{ matrix.target }}
+          target: x86_64-unknown-linux-gnu
           rustflags: ""
           cache: ${{ github.ref_type != 'tag' }}
       - name: Set LLVM_VERSION
@@ -48,7 +31,6 @@ jobs:
           echo "LLVM_VERSION=$(rustc --version --verbose | grep "LLVM version" | cut
           -d':' -f2 | xargs)" >> $GITHUB_ENV
       - name: Install SDL Dependencies
-        # https://wiki.libsdl.org/SDL3/README-linux#build-dependencies
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: build-essential git make pkg-config cmake ninja-build
@@ -59,41 +41,39 @@ jobs:
             libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev
             libudev-dev libthai-dev libpipewire-0.3-dev libwayland-dev
             libdecor-0-dev liburing-dev libfontconfig-dev
-          version: ${{ matrix.target }}-1.0
+          version: x86_64-unknown-linux-gnu-1.0
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@v2
         with:
           version: ${{ env.LLVM_VERSION }}
           force-url:
             https://github.com/llvm/llvm-project/releases/download/llvmorg-${{
-            env.LLVM_VERSION }}/LLVM-${{ env.LLVM_VERSION }}-Linux-${{
-            matrix.llvm }}.tar.xz
+            env.LLVM_VERSION }}/LLVM-${{ env.LLVM_VERSION }}-Linux-X64.tar.xz
       - name: Build
+        run: cargo build --release -v --target=x86_64-unknown-linux-gnu
+      - name: Package bundle
         run: |
-          cargo build --profile ${{ env.BUILD_PROFILE }} -v --target=${{ matrix.target }}
-          mkdir output
-          cp target/${{ matrix.target }}/${{ env.BUILD_DIR }}/gopher64 output/gopher64-${{ matrix.arch }}
-      - name: Upload file
+          mkdir -p "bundle/${GAME_NAME}"
+          cp target/x86_64-unknown-linux-gnu/release/gopher64 "bundle/${GAME_NAME}/${GAME_NAME}"
+          chmod +x "bundle/${GAME_NAME}/${GAME_NAME}"
+          cp game/*.z64 "bundle/${GAME_NAME}/"
+          cp dist/PLAYERS-README.txt "bundle/${GAME_NAME}/README.txt"
+          cp LICENSE "bundle/${GAME_NAME}/EMULATOR-LICENSE.txt"
+          cd bundle
+          tar czf "../${GAME_NAME}-linux-x86_64.tar.gz" "${GAME_NAME}"
+      - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: gopher64-${{ matrix.arch }}
-          path: output/gopher64-${{ matrix.arch }}
-          archive: false
+          name: ${{ env.GAME_NAME }}-linux-x86_64
+          path: ${{ env.GAME_NAME }}-linux-x86_64.tar.gz
+      - name: Attach to release
+        if: ${{ github.ref_type == 'tag' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.GAME_NAME }}-linux-x86_64.tar.gz
 
   build-windows:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-2025
-            target: x86_64-pc-windows-msvc
-            arch: windows-x86_64
-            llvm: win64
-          - os: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            arch: windows-aarch64
-            llvm: woa64
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@v7
         with:
@@ -101,7 +81,7 @@ jobs:
           fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: ${{ matrix.target }}
+          target: x86_64-pc-windows-msvc
           rustflags: ""
           cache: ${{ github.ref_type != 'tag' }}
       - name: Set LLVM_VERSION
@@ -114,188 +94,27 @@ jobs:
           version: ${{ env.LLVM_VERSION }}
           force-url:
             https://github.com/llvm/llvm-project/releases/download/llvmorg-${{
-            env.LLVM_VERSION }}/LLVM-${{ env.LLVM_VERSION }}-${{ matrix.llvm
-            }}.exe
+            env.LLVM_VERSION }}/LLVM-${{ env.LLVM_VERSION }}-win64.exe
       - name: Build
-        run: |
-          cargo build --profile ${{ env.BUILD_PROFILE }} -v --target=${{ matrix.target }}
-          mkdir output
-          cp target/${{ matrix.target }}/${{ env.BUILD_DIR }}/gopher64.exe output/gopher64-${{ matrix.arch }}.exe
+        run: cargo build --release -v --target=x86_64-pc-windows-msvc
         env:
           CC: clang-cl
           CXX: clang-cl
-      - name: Upload unsigned artifact
-        id: upload-unsigned-artifact
+      - name: Package bundle
+        run: |
+          New-Item -ItemType Directory -Path "bundle/$env:GAME_NAME" -Force
+          Copy-Item "target/x86_64-pc-windows-msvc/release/gopher64.exe" "bundle/$env:GAME_NAME/$env:GAME_NAME.exe"
+          Copy-Item "game/*.z64" "bundle/$env:GAME_NAME/"
+          Copy-Item "dist/PLAYERS-README.txt" "bundle/$env:GAME_NAME/README.txt"
+          Copy-Item "LICENSE" "bundle/$env:GAME_NAME/EMULATOR-LICENSE.txt"
+          Compress-Archive -Path "bundle/$env:GAME_NAME" -DestinationPath "$env:GAME_NAME-windows-x86_64.zip"
+      - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: gopher64-${{ matrix.arch }}
-          path: output/gopher64-${{ matrix.arch }}.exe
-          archive: ${{ github.ref_type == 'tag' && true || false }}
-      - name: SignPath
+          name: ${{ env.GAME_NAME }}-windows-x86_64
+          path: ${{ env.GAME_NAME }}-windows-x86_64.zip
+      - name: Attach to release
         if: ${{ github.ref_type == 'tag' }}
-        uses: signpath/github-action-submit-signing-request@v2
+        uses: softprops/action-gh-release@v2
         with:
-          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
-          organization-id: "${{ secrets.SIGNPATH_ORG_ID }}"
-          project-slug: "gopher64"
-          artifact-configuration-slug: "gopher64-${{ matrix.arch }}"
-          signing-policy-slug: "release-signing"
-          github-artifact-id: "${{ steps.upload-unsigned-artifact.outputs.artifact-id }}"
-          wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 3600
-          output-artifact-directory: output-signed
-      - name: Upload signed artifact
-        if: ${{ github.ref_type == 'tag' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: gopher64-${{ matrix.arch }}
-          path: output-signed/gopher64-${{ matrix.arch }}.exe
-          archive: false
-          overwrite: true
-
-  build-macos:
-    runs-on: macos-15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            arch: macos-aarch64
-            llvm: ARM64
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          fetch-depth: 0
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          target: ${{ matrix.target }}
-          rustflags: ""
-          cache: ${{ github.ref_type != 'tag' }}
-      - name: Set LLVM_VERSION
-        run:
-          echo "LLVM_VERSION=$(rustc --version --verbose | grep "LLVM version" | cut
-          -d':' -f2 | xargs)" >> $GITHUB_ENV
-      - name: Install LLVM and Clang
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: ${{ env.LLVM_VERSION }}
-          force-url:
-            https://github.com/llvm/llvm-project/releases/download/llvmorg-${{
-            env.LLVM_VERSION }}/LLVM-${{ env.LLVM_VERSION }}-macOS-${{
-            matrix.llvm }}.tar.xz
-      - name: Build
-        run: |
-          cargo install cargo-bundle
-          brew install molten-vk
-          cargo build --profile ${{ env.BUILD_PROFILE }} --no-default-features -v --target=${{ matrix.target }}
-          mv target/${{ matrix.target }}/${{ env.BUILD_DIR }}/gopher64 target/${{ matrix.target }}/${{ env.BUILD_DIR }}/gopher64-cli
-          cargo bundle --profile ${{ env.BUILD_PROFILE }} --target=${{ matrix.target }} --format osx
-          cp target/${{ matrix.target }}/${{ env.BUILD_DIR }}/gopher64-cli target/${{ matrix.target }}/${{ env.BUILD_DIR }}/bundle/osx/Gopher64.app/Contents/MacOS/gopher64-cli
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "15.0"
-      - name: Sign Bundle Dev
-        if: ${{ github.ref_type != 'tag' }}
-        run: |
-          codesign -f --entitlements data/macos/entitlements_dev.plist --deep --timestamp --options runtime -s - target/${{ matrix.target }}/${{ env.BUILD_DIR }}/bundle/osx/Gopher64.app
-      - name: Import Codesign Certs
-        if: ${{ github.ref_type == 'tag' }}
-        uses: apple-actions/import-codesign-certs@v7
-        with:
-          p12-file-base64: ${{ secrets.APPLE_CERTIFICATES_FILE_BASE64 }}
-          p12-password: ${{ secrets.APPLE_CERTIFICATES_PASSWORD }}
-      - name: Sign Bundle Release
-        if: ${{ github.ref_type == 'tag' }}
-        run: |
-          codesign -f --timestamp --options runtime -s "${{ secrets.APPLE_DEVELOPER_ID }}" target/${{ matrix.target }}/${{ env.BUILD_DIR }}/bundle/osx/Gopher64.app/Contents/Frameworks/libMoltenVK.dylib
-          codesign -f --entitlements data/macos/entitlements_child.plist --timestamp --options runtime -s "${{ secrets.APPLE_DEVELOPER_ID }}" target/${{ matrix.target }}/${{ env.BUILD_DIR }}/bundle/osx/Gopher64.app/Contents/MacOS/gopher64-cli
-          codesign -f --entitlements data/macos/entitlements_prod.plist --timestamp --options runtime -s "${{ secrets.APPLE_DEVELOPER_ID }}" target/${{ matrix.target }}/${{ env.BUILD_DIR }}/bundle/osx/Gopher64.app
-          zip -r gopher64-${{ matrix.arch }}.zip target/${{ matrix.target }}/${{ env.BUILD_DIR }}/bundle/osx/Gopher64.app
-          xcrun notarytool submit --wait --apple-id "${{ secrets.APPLE_ID }}" --team-id "${{ secrets.APPLE_DEVELOPER_ID }}" --password "${{ secrets.APPLE_APP_PASSWORD }}" gopher64-${{ matrix.arch }}.zip
-          xcrun stapler staple target/${{ matrix.target }}/${{ env.BUILD_DIR }}/bundle/osx/Gopher64.app
-      - name: Upload file
-        uses: actions/upload-artifact@v7
-        with:
-          name: gopher64-${{ matrix.arch }}
-          path: target/${{ matrix.target }}/${{ env.BUILD_DIR }}/bundle/osx
-
-  build-android:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            platform: 33
-            ndk: 29.0.14206865
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          fetch-depth: 0
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          target: x86_64-linux-android,aarch64-linux-android
-          rustflags: ""
-          cache: ${{ github.ref_type != 'tag' }}
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: "platforms;android-${{ matrix.platform }} ndk;${{ matrix.ndk }}"
-      - name: Decode keystore and create jks
-        if: ${{ github.ref_type == 'tag' }}
-        working-directory: android-project
-        run: |
-          echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > app/keystore.jks
-
-          cat <<EOF > keystore.properties
-          storePassword=${{ secrets.ANDROID_STORE_PASSWORD }}
-          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
-          keyAlias=gopher64
-          storeFile=keystore.jks
-          EOF
-      - name: Build
-        working-directory: android-project
-        run: |
-          cargo install cargo-ndk
-          ./gradlew assemble${{ env.BUILD_PROFILE == 'release' && 'Release' || 'Debug' }}
-          mkdir output
-          cp app/build/outputs/apk/${{ env.BUILD_DIR }}/app-${{ env.BUILD_DIR }}.apk output/gopher64-android.apk
-      - name: Upload file
-        uses: actions/upload-artifact@v7
-        with:
-          name: gopher64-android
-          path: android-project/output/gopher64-android.apk
-          archive: false
-
-  collect-artifacts:
-    name: Collect release artifacts
-    needs: [build-linux, build-windows, build-macos, build-android]
-    if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download all workflow artifacts
-        uses: actions/download-artifact@v8
-        with:
-          skip-decompress: true
-          merge-multiple: true
-          path: release-artifacts
-      - name: Add files to release
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: true
-          files: release-artifacts/*
-      - name: Setup butler
-        uses: remarkablegames/setup-butler@v3
-      - name: Upload to itch.io
-        run: |
-          butler push release-artifacts/gopher64-linux-x86_64 loganmc10/gopher64:linux-x86_64 --userversion ${GITHUB_REF_NAME#v}
-          butler push release-artifacts/gopher64-linux-aarch64 loganmc10/gopher64:linux-aarch64 --userversion ${GITHUB_REF_NAME#v}
-          butler push release-artifacts/gopher64-windows-x86_64.exe loganmc10/gopher64:windows-x86_64 --userversion ${GITHUB_REF_NAME#v}
-          butler push release-artifacts/gopher64-windows-aarch64.exe loganmc10/gopher64:windows-aarch64 --userversion ${GITHUB_REF_NAME#v}
-          butler push release-artifacts/gopher64-macos-aarch64.zip loganmc10/gopher64:macos-aarch64 --userversion ${GITHUB_REF_NAME#v}
-          butler push release-artifacts/gopher64-android.apk loganmc10/gopher64:android --userversion ${GITHUB_REF_NAME#v}
-        env:
-          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+          files: ${{ env.GAME_NAME }}-windows-x86_64.zip
