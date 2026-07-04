@@ -1,0 +1,120 @@
+name: Build game bundles
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  GAME_NAME: VoidStrider64
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: x86_64-unknown-linux-gnu
+          rustflags: ""
+          cache: ${{ github.ref_type != 'tag' }}
+      - name: Set LLVM_VERSION
+        run:
+          echo "LLVM_VERSION=$(rustc --version --verbose | grep "LLVM version" | cut
+          -d':' -f2 | xargs)" >> $GITHUB_ENV
+      - name: Install SDL Dependencies
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: build-essential git make pkg-config cmake ninja-build
+            gnome-desktop-testing libasound2-dev libpulse-dev libaudio-dev
+            libfribidi-dev libjack-dev libsndio-dev libx11-dev libxext-dev
+            libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev
+            libxtst-dev libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev
+            libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev
+            libudev-dev libthai-dev libpipewire-0.3-dev libwayland-dev
+            libdecor-0-dev liburing-dev libfontconfig-dev
+          version: x86_64-unknown-linux-gnu-1.0
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          force-url:
+            https://github.com/llvm/llvm-project/releases/download/llvmorg-${{
+            env.LLVM_VERSION }}/LLVM-${{ env.LLVM_VERSION }}-Linux-X64.tar.xz
+      - name: Build
+        run: cargo build --release -v --target=x86_64-unknown-linux-gnu
+      - name: Package bundle
+        run: |
+          mkdir -p "bundle/${GAME_NAME}"
+          cp target/x86_64-unknown-linux-gnu/release/gopher64 "bundle/${GAME_NAME}/${GAME_NAME}"
+          chmod +x "bundle/${GAME_NAME}/${GAME_NAME}"
+          cp game/*.z64 "bundle/${GAME_NAME}/"
+          cp dist/PLAYERS-README.txt "bundle/${GAME_NAME}/README.txt"
+          cp LICENSE "bundle/${GAME_NAME}/EMULATOR-LICENSE.txt"
+          cd bundle
+          tar czf "../${GAME_NAME}-linux-x86_64.tar.gz" "${GAME_NAME}"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.GAME_NAME }}-linux-x86_64
+          path: ${{ env.GAME_NAME }}-linux-x86_64.tar.gz
+      - name: Attach to release
+        if: ${{ github.ref_type == 'tag' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.GAME_NAME }}-linux-x86_64.tar.gz
+
+  build-windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: x86_64-pc-windows-msvc
+          rustflags: ""
+          cache: ${{ github.ref_type != 'tag' }}
+      - name: Set LLVM_VERSION
+        run: |
+          $llvm_version = rustc --version --verbose | Select-String "LLVM version" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
+          echo "LLVM_VERSION=$llvm_version" >> $env:GITHUB_ENV
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          force-url:
+            https://github.com/llvm/llvm-project/releases/download/llvmorg-${{
+            env.LLVM_VERSION }}/LLVM-${{ env.LLVM_VERSION }}-win64.exe
+      - name: Build
+        run: cargo build --release -v --target=x86_64-pc-windows-msvc
+        env:
+          CC: clang-cl
+          CXX: clang-cl
+      - name: Package bundle
+        run: |
+          New-Item -ItemType Directory -Path "bundle/$env:GAME_NAME" -Force
+          Copy-Item "target/x86_64-pc-windows-msvc/release/gopher64.exe" "bundle/$env:GAME_NAME/$env:GAME_NAME.exe"
+          Copy-Item "game/*.z64" "bundle/$env:GAME_NAME/"
+          Copy-Item "dist/PLAYERS-README.txt" "bundle/$env:GAME_NAME/README.txt"
+          Copy-Item "LICENSE" "bundle/$env:GAME_NAME/EMULATOR-LICENSE.txt"
+          Compress-Archive -Path "bundle/$env:GAME_NAME" -DestinationPath "$env:GAME_NAME-windows-x86_64.zip"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.GAME_NAME }}-windows-x86_64
+          path: ${{ env.GAME_NAME }}-windows-x86_64.zip
+      - name: Attach to release
+        if: ${{ github.ref_type == 'tag' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.GAME_NAME }}-windows-x86_64.zip
